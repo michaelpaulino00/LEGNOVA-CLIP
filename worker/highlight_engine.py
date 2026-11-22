@@ -125,26 +125,35 @@ def process(video: pathlib.Path, output: pathlib.Path, model: str,
     length=probe(video)
     output.mkdir(parents=True,exist_ok=True)
     spoken=transcribe(video,model)
-    if not spoken:raise RuntimeError('No se detectó voz para generar clips con subtítulos')
-    picks=rank_windows(spoken,length,min_seconds,max_seconds,max_clips)
-    if not picks:raise RuntimeError('No se detectaron ventanas con suficiente voz')
+    picks=rank_windows(spoken,length,min_seconds,max_seconds,max_clips) if spoken else []
+    # Video promos/trailers may have music and sparse dialogue. In this case
+    # produce bounded highlights without claiming the heuristic found speech.
+    fallback=not bool(picks)
+    if fallback:
+        segment=min(float(max_seconds),max(float(min_seconds),min(45.0,length/2)))
+        start_points=[0.0]
+        if length>segment+15 and max_clips>1:
+            start_points.append(max(0.0,length-segment))
+        picks=[(0.0,t,min(length,t+segment),0,-1) for t in start_points]
     signature=hashlib.sha256((str(video)+str(video.stat().st_size)).encode()).hexdigest()[:16]
     records=[]
     for points,start,end,i,j in picks:
         name=f'{signature}_{int(start*1000):010d}_{int(end*1000):010d}'
         target=output/(name+'.mp4')
         subtitle=output/(name+'.srt')
-        subtitle.write_text(make_srt(spoken[i:j+1],start,end),encoding='utf-8')
+        subtitle.write_text(make_srt(spoken[i:j+1],start,end) if not fallback else '',encoding='utf-8')
         if not target.is_file() or target.stat().st_size == 0:
-            run([sys.executable,str(pathlib.Path(__file__).with_name('render_clip.py')),
+            command=[sys.executable,str(pathlib.Path(__file__).with_name('render_clip.py')),
                 '--input',str(video),'--output',str(target),'--start',str(start),
-                '--duration',str(end-start),'--subtitles',str(subtitle)])
+                '--duration',str(end-start)]
+            if not fallback and subtitle.stat().st_size:command+=['--subtitles',str(subtitle)]
+            run(command)
         if target.stat().st_size==0:raise RuntimeError('El render quedó vacío')
         records.append({'video_path':str(target),'subtitles_path':str(subtitle),
             'score':points,'start_seconds':start,'end_seconds':end,
-            'selection_method':'whisper_transcription_and_heuristics','status':'ready_local_not_published'})
+            'selection_method':'time_fallback_no_speech' if fallback else 'whisper_transcription_and_heuristics','status':'ready_local_not_published'})
     manifest={'source':str(video),'source_seconds':length,'transcript_segments':len(spoken),
-        'selection_method':'whisper_transcription_and_heuristics','clips':records}
+        'selection_method':'time_fallback_no_speech' if fallback else 'whisper_transcription_and_heuristics','clips':records}
     (output/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
     return manifest
 

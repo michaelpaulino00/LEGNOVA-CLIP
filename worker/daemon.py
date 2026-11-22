@@ -95,18 +95,44 @@ def direct_capture(url: str, kind: str, folder: pathlib.Path):
         subprocess.run(cmd,timeout=LIVE_SECONDS+90,check=True)
     elif kind=='mp4':
         target=folder/'source.mp4'
-        with requests.get(url,stream=True,allow_redirects=False,timeout=(10,45)) as res:
-            if 300<=res.status_code<400:raise ValueError('La fuente directa no puede redirigir a otro dominio')
-            res.raise_for_status()
-            length=int(res.headers.get('Content-Length') or 0)
-            if length>LIMIT_MB*1024*1024:raise ValueError('El archivo supera el límite de tamaño')
-            count=0
-            with target.open('wb') as out:
-                for part in res.iter_content(chunk_size=1024*1024):
-                    if not part:continue
-                    count+=len(part)
-                    if count>LIMIT_MB*1024*1024:raise ValueError('El video supera el límite de tamaño')
-                    out.write(part)
+        # Base44's public file endpoint redirects to its media delivery domain.
+        # Follow that specific trusted redirect, but never arbitrary untrusted hosts.
+        current=url
+        origin=urlparse(url)
+        for hop in range(3):
+            verified_direct_url(current,'mp4')
+            with requests.get(current,stream=True,allow_redirects=False,timeout=(10,45)) as res:
+                if res.status_code in (301,302,303,307,308):
+                    from urllib.parse import urljoin
+                    new=urljoin(current,res.headers.get('Location',''))
+                    oldp,newp=urlparse(current),urlparse(new)
+                    base44_handoff=(origin.hostname=='base44.app'
+                        and origin.path.startswith(f'/api/apps/{APP_ID}/files/mp/public/{APP_ID}/')
+                        and oldp.hostname=='base44.app' and newp.hostname=='media.base44.com'
+                        and newp.path.startswith(f'/videos/public/{APP_ID}/')
+                        and newp.path.rsplit('/',1)[-1]==origin.path.rsplit('/',1)[-1])
+                    same_host=(newp.hostname==oldp.hostname)
+                    if not (base44_handoff or same_host):
+                        raise ValueError('La fuente intenta redirigir a un dominio de video no autorizado')
+                    verified_direct_url(new,'mp4')
+                    current=new
+                    continue
+                res.raise_for_status()
+                content_type=res.headers.get('Content-Type','').split(';')[0].lower()
+                if content_type and content_type not in ('video/mp4','application/octet-stream','binary/octet-stream'):
+                    raise ValueError('La fuente no devolvió un archivo MP4')
+                length=int(res.headers.get('Content-Length') or 0)
+                if length>LIMIT_MB*1024*1024:raise ValueError('El archivo supera el límite de tamaño')
+                count=0
+                with target.open('wb') as out:
+                    for part in res.iter_content(chunk_size=1024*1024):
+                        if not part:continue
+                        count+=len(part)
+                        if count>LIMIT_MB*1024*1024:raise ValueError('El video supera el límite de tamaño')
+                        out.write(part)
+                break
+        else:
+            raise ValueError('La fuente ha realizado demasiadas redirecciones')
     else:
         raise ValueError('Solo se acepta HLS o MP4 como fuente directa')
     if not target.is_file() or target.stat().st_size<100000:
