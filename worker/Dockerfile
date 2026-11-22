@@ -3,5 +3,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-de
 WORKDIR /app
 COPY worker/ /app/
 RUN pip install --no-cache-dir -r requirements.txt
-RUN python -m py_compile engine.py render_clip.py highlight_engine.py daemon.py
+RUN python -m py_compile engine.py render_clip.py highlight_engine.py transcribe_audio.py daemon.py
 ENTRYPOINT ["python", "daemon.py"]

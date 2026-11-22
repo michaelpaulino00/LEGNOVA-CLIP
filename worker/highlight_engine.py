@@ -44,15 +44,23 @@ def probe(video: pathlib.Path) -> float:
 
 
 def transcribe(video: pathlib.Path, model_name: str) -> list[Utterance]:
+    import os
+    if os.environ.get('CLIP_TRANSCRIPTION_MODE','auto').lower()=='skip':
+        print('Transcripción omitida por configuración del servidor; se usarán segmentos de tiempo.',file=sys.stderr)
+        return []
+    child=os.environ.copy()
+    child.update({'OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','MKL_NUM_THREADS':'1','TOKENIZERS_PARALLELISM':'false'})
+    script=pathlib.Path(__file__).with_name('transcribe_audio.py')
     try:
-        from faster_whisper import WhisperModel
-    except ImportError as exc:
-        raise RuntimeError('Instala faster-whisper: pip install -r worker/requirements.txt') from exc
-    model = WhisperModel(model_name, device='cpu', compute_type='int8')
-    segments, info = model.transcribe(str(video), language=None, vad_filter=True,
-        beam_size=3, condition_on_previous_text=False)
-    return [Utterance(float(s.start), float(s.end), s.text.strip())
-        for s in segments if s.text.strip() and s.end > s.start]
+        proc=subprocess.run([sys.executable,str(script),str(video),model_name],
+            capture_output=True,text=True,timeout=420,env=child)
+        if proc.returncode!=0:
+            print('Whisper subprocess failed; fallback to time-based clips: '+proc.stderr[-400:],file=sys.stderr)
+            return []
+        return [Utterance(float(s['start']),float(s['end']),str(s['text'])) for s in json.loads(proc.stdout)]
+    except (subprocess.TimeoutExpired,json.JSONDecodeError) as exc:
+        print('Whisper unavailable: '+str(exc)[:200],file=sys.stderr)
+        return []
 
 
 def score(items: list[Utterance]) -> float:

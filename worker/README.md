@@ -73,3 +73,7 @@ El flujo automático revisa los trabajos cada 10 segundos si el servicio está e
 **Seguridad del puente:** el endpoint `workerAccess` permite al administrador generar 40 bytes aleatorios (80 caracteres hexadecimales) mediante `crypto.getRandomValues`. La clave completa se muestra una sola vez en el panel y solamente el SHA-256 queda guardado en el backend. El `workerBridge` compara la huella del token Bearer enviado por HTTPS con el hash almacenado. El propietario debe pegar la clave en la variable de entorno `WORKER_BRIDGE_KEY` de Render sin compartirla en chats ni repositorios.
 
 En Render, `AUTHORIZED_MEDIA_HOSTS` es obligatorio para fuentes HLS (playlist y segmentos). Para MP4 subido por el propietario, se aceptan URLs HTTPS públicas sin redirecciones y se bloquean destinos privados; la lista de dominios es opcional pero recomendada.
+
+## Memoria y procesamiento en Render Free (512 MiB)
+
+La versión de 22/11/2026 usa `worker/transcribe_audio.py` para transcribir con un único hilo en un proceso aislado. `CLIP_TRANSCRIPTION_MODE=auto` intenta subtitular, y cuando la transcripción falla usa fragmentos de tiempo sin fingir análisis de voz. `CLIP_TRANSCRIPTION_MODE=skip` omite Whisper y genera clips válidos **sin subtítulos** para evitar reinicios por memoria; permite verificar captura→render→TikTok en la instancia gratuita. `CLIP_RESOLUTION=720` produce formato 720x1280 (9:16); en servidores con suficiente memoria puede usarse `CLIP_RESOLUTION=1080`.

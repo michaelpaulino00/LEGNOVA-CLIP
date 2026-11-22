@@ -3,7 +3,7 @@
 Uso: python render_clip.py --input video.mp4 --start 0 --duration 30 --subtitles captions.srt --output clip.mp4
 No descarga YouTube, no publica ni accede a Base44. Requiere ffmpeg/ffprobe.
 """
-import argparse, pathlib, shutil, subprocess, sys
+import argparse, os, pathlib, shutil, subprocess, sys
 
 def run(args):
     subprocess.run(args, check=True, timeout=600)
@@ -22,14 +22,16 @@ def main():
     if a.duration<=0 or a.duration>180: p.error("Duración permitida: 0-180 segundos")
     dest=pathlib.Path(a.output).resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
-    vf="scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1"
+    width=720 if os.environ.get('CLIP_RESOLUTION','720')=='720' else 1080
+    height=1280 if width==720 else 1920
+    vf=f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
     if a.subtitles:
         s=pathlib.Path(a.subtitles).resolve()
         if not s.is_file(): p.error("No existe el SRT")
         # Subtítulos centrados y elevados para no tapar controles de las redes.
         escaped=str(s).replace("\\","/").replace(":","\\:").replace("'","\\'")
         vf+=f",subtitles='{escaped}':force_style='FontSize=18,Outline=2,Shadow=1,MarginV=230,Alignment=2'"
-    cmd=["ffmpeg","-hide_banner","-loglevel","error","-y","-ss",str(a.start),"-i",str(src),"-t",str(a.duration),"-vf",vf,"-c:v","libx264","-preset","veryfast","-crf","23","-pix_fmt","yuv420p","-c:a","aac","-b:a","128k","-movflags","+faststart",str(dest)]
+    cmd=["ffmpeg","-hide_banner","-loglevel","error","-y","-ss",str(a.start),"-i",str(src),"-t",str(a.duration),"-vf",vf,"-c:v","libx264","-preset","veryfast","-threads","1","-crf","23","-pix_fmt","yuv420p","-c:a","aac","-b:a","128k","-movflags","+faststart",str(dest)]
     run(cmd)
     print(f"MP4 generado: {dest} ({dest.stat().st_size} bytes)")
 
