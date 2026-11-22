@@ -1,3 +1,4 @@
 faster-whisper==1.2.1
 requests==2.32.5
 yt-dlp>=2025.11,<2027
+av==18.1.1
