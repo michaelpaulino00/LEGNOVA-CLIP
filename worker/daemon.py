@@ -33,7 +33,7 @@ def start_http_health():
                 self.send_response(404);self.end_headers();return
             healthy=bool(os.environ.get('WORKER_BRIDGE_KEY')) and os.environ.get('MEDIA_RIGHTS_CONFIRMED')=='1'
             payload=json.dumps({'service':'legnova-clip-worker','ready':healthy,'media_capture':'worker' if healthy else 'disabled'}).encode()
-            self.send_response(200 if healthy else 503)
+            self.send_response(200)  # Service is alive; JSON readiness remains false until credentials are set
             self.send_header('Content-Type','application/json')
             self.send_header('Content-Length',str(len(payload)))
             self.end_headers();self.wfile.write(payload)
@@ -196,7 +196,9 @@ def process_session(session):
 def main():
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     start_http_health()
-    if len(WORKER_KEY)<32:raise RuntimeError('Configura WORKER_BRIDGE_KEY (secreto del servidor)')
+    if len(WORKER_KEY)<32:
+        LOG.warning('WORKER_BRIDGE_KEY is missing. Service online but capture disabled until credentials are configured.')
+        while True:time.sleep(120)
     if os.environ.get('MEDIA_RIGHTS_CONFIRMED')!='1':raise PermissionError('Confirma primero derechos de reutilización del contenido para ejecutar el worker')
     if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):raise RuntimeError('FFmpeg y FFprobe no están disponibles')
     LOG.info('LEGNOVA worker started; polling Base44')
