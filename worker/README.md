@@ -34,7 +34,7 @@ docker run --restart unless-stopped --env-file worker/.env.private legnova-clip
 
 El servicio debe desplegarse en un servidor persistente con acceso externo, recursos y almacenamiento temporal suficientes, no en el sandbox de desarrollo de Base44.
 
-**Antes de arrancar:** establecer el mismo secreto largo y aleatorio `WORKER_BRIDGE_KEY` en Base44 → Secrets y en `worker/.env.private`; configurar `MEDIA_RIGHTS_CONFIRMED=1` solo si se posee el contenido o autorización expresa; limitar `ALLOWED_YOUTUBE_CHANNEL_ID` al canal autorizado. Las solicitudes al puente requieren HTTPS y token privado. Ningún secreto debe subirse a Git ni enviarse por chat.
+**Antes de arrancar:** abre LEGNOVA CLIP → Configuración → Conectar motor, genera una clave segura y cópiala en Render → Environment como `WORKER_BRIDGE_KEY` (se guarda solo el hash en Base44); configurar `MEDIA_RIGHTS_CONFIRMED=1` únicamente cuando el usuario declara que cuenta con permiso; limitar `ALLOWED_YOUTUBE_CHANNEL_ID` al canal autorizado. Las solicitudes al puente requieren HTTPS y token privado. Ningún secreto debe subirse a Git ni enviarse por chat.
 
 El endpoint de Base44 `workerBridge` debe comprobarse con una prueba real desde el servidor: acción `poll`, `claim`, carga multipart MP4, registro en Clip, y finalización. No se ha probado ese flujo desde un host externo.
 
@@ -54,7 +54,7 @@ No declarar `published` hasta que TikTok devuelva un estado final confirmado.
 
 `render.yaml` define un **background worker** Docker en Render. No es un servidor web: el proceso es continuo y revisa trabajos de Base44. Antes de aplicarla, enlaza el código con un repositorio Git accesible a Render, revisa los costes del plan `starter` y completa las variables privadas. La conexión del plugin Render con ChatGPT por sí sola no otorga acceso al repositorio Git del proyecto ni crea su despliegue.
 
-El worker requiere un `WORKER_BRIDGE_KEY` idéntico al secreto homónimo de Base44, definido por el propietario en ambos paneles. `MEDIA_RIGHTS_CONFIRMED=1` y el campo `reuse_authorized=true` de la sesión solo deben habilitarse si existen los permisos correspondientes. No guardes secretos en el repositorio.
+El worker requiere `WORKER_BRIDGE_KEY`, generado una sola vez en LEGNOVA CLIP → Configuración y copiado manualmente a Render → Environment. Base44 almacena únicamente el hash del token, no su texto. `MEDIA_RIGHTS_CONFIRMED=1` y el campo `reuse_authorized=true` de la sesión solo deben habilitarse si existen los permisos correspondientes. No guardes secretos en el repositorio.
 
 ## Pruebas técnicas (22/11/2026)
 
@@ -69,3 +69,7 @@ Cuando YouTube limita el acceso al reproductor con `LOGIN_REQUIRED`, la aplicaci
 En LEGNOVA CLIP, se registra la URL de YouTube para identificación y la fuente directa por separado para la captura. El servicio debe configurar `AUTHORIZED_MEDIA_HOSTS` con los nombres exactos de los dominios autorizados, separados por coma. El worker rechaza hosts no listados y direcciones privadas. `MEDIA_RIGHTS_CONFIRMED` y el permiso individual siguen siendo obligatorios.
 
 El flujo automático revisa los trabajos cada 10 segundos si el servicio está encendido; los ciclos HLS producen clips cuando haya suficiente audio acumulado y el análisis concluya. No puede garantizar un clip en el primer segundo porque necesita capturar y transcribir un fragmento.
+
+**Seguridad del puente:** el endpoint `workerAccess` permite al administrador generar 40 bytes aleatorios (80 caracteres hexadecimales) mediante `crypto.getRandomValues`. La clave completa se muestra una sola vez en el panel y solamente el SHA-256 queda guardado en el backend. El `workerBridge` compara la huella del token Bearer enviado por HTTPS con el hash almacenado. El propietario debe pegar la clave en la variable de entorno `WORKER_BRIDGE_KEY` de Render sin compartirla en chats ni repositorios.
+
+En Render, `AUTHORIZED_MEDIA_HOSTS` es obligatorio para fuentes HLS (playlist y segmentos). Para MP4 subido por el propietario, se aceptan URLs HTTPS públicas sin redirecciones y se bloquean destinos privados; la lista de dominios es opcional pero recomendada.

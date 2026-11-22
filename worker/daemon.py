@@ -66,14 +66,16 @@ def media_id(url):
     if not re.fullmatch(r'[a-zA-Z0-9_-]{11}',value):raise ValueError('ID de video inválido')
     return value
 
-def verified_direct_url(url: str) -> str:
-    """Direct sources must belong to a specifically configured media provider."""
+def verified_direct_url(url: str, kind: str) -> str:
+    """Reject unsafe destinations; require an explicit domain allowlist for HLS."""
     p=urlparse(url)
     host=(p.hostname or '').lower().rstrip('.')
     allow={value.strip().lower().rstrip('.') for value in os.environ.get('AUTHORIZED_MEDIA_HOSTS','').split(',') if value.strip()}
     if p.scheme!='https' or not host or p.username or p.password or p.port not in (None,443):
         raise ValueError('La fuente directa debe ser una URL HTTPS sin credenciales en la dirección')
-    if not allow or host not in allow:
+    if kind=='hls' and not allow:
+        raise PermissionError('Para fuentes HLS debes configurar AUTHORIZED_MEDIA_HOSTS en Render')
+    if allow and host not in allow:
         raise PermissionError('El dominio de transmisión no está autorizado por el administrador del motor')
     addresses=socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
@@ -83,7 +85,7 @@ def verified_direct_url(url: str) -> str:
 
 def direct_capture(url: str, kind: str, folder: pathlib.Path):
     """Use a broadcaster-provided MP4 or HTTPS HLS feed instead of the YouTube webpage."""
-    verified_direct_url(url)
+    verified_direct_url(url,kind)
     if kind=='hls':
         target=folder/'source.mp4'
         cmd=['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y',
