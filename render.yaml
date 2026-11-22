@@ -1,0 +1,29 @@
+# Render Blueprint for LEGNOVA CLIP. This is a deployment template only.
+# It is not deployed automatically by Base44. Review costs before approving a Render sync.
+services:
+  - type: worker
+    name: legnova-clip-video-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./worker/Dockerfile
+    dockerContext: .
+    autoDeployTrigger: commit
+    envVars:
+      - key: LEGNOVA_APP_URL
+        value: https://clip.legnovagroup.com
+      - key: WORKER_BRIDGE_KEY
+        sync: false
+      - key: MEDIA_RIGHTS_CONFIRMED
+        sync: false
+      - key: ALLOWED_YOUTUBE_CHANNEL_ID
+        sync: false
+      - key: AUTHORIZED_MEDIA_HOSTS
+        sync: false
+      - key: WHISPER_MODEL
+        value: tiny
+      - key: POLL_SECONDS
+        value: '10'
+      - key: LIVE_CAPTURE_SECONDS
+        value: '180'
+      - key: SOURCE_MAX_MB
+        value: '800'
