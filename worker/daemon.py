@@ -219,7 +219,12 @@ def main():
                     LOG.info('Session %s: %d clips registered',session['id'],n)
                 except Exception as exc:
                     LOG.exception('Session %s failed',session['id'])
-                    bridge('failure',session_id=session['id'],error=str(exc)[:300])
+                    issue=str(exc)
+                    denied=any(term in issue.lower() for term in ('sign in to confirm', 'not a bot', 'login_required', 'sign in to youtube'))
+                    if denied:
+                        bridge('needs_source',session_id=session['id'],error='YouTube solicita autenticación para descargar el video. Suba un MP4 autorizado o introduzca una fuente HLS del distribuidor.')
+                    else:
+                        bridge('failure',session_id=session['id'],error=issue[:300])
         except Exception:
             LOG.exception('Polling or capture failed')
         time.sleep(POLL_SECONDS)
