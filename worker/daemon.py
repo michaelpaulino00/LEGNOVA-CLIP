@@ -332,7 +332,7 @@ def main():
                     issue=str(exc)
                     denied=any(term in issue.lower() for term in ('sign in to confirm', 'not a bot', 'login_required', 'sign in to youtube'))
                     if denied:
-                        bridge('needs_source',session_id=session['id'],error='YouTube solicita autenticación para descargar el video. Suba un MP4 autorizado o introduzca una fuente HLS del distribuidor.')
+                        bridge('needs_source',session_id=session['id'],error='YouTube requiere inicio de sesión en el servidor. Los dos lectores públicos fallaron; se reintentará automáticamente en 15 minutos.')
                     else:
                         bridge('failure',session_id=session['id'],error=issue[:300])
         except Exception:
