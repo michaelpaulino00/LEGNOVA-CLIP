@@ -62,7 +62,9 @@ def media_id(url):
     p=urlparse(url)
     if p.hostname not in ('youtube.com','www.youtube.com','m.youtube.com','youtu.be'):raise ValueError('Solo se permiten enlaces a YouTube')
     from urllib.parse import parse_qs
-    value=p.path.lstrip('/') if p.hostname=='youtu.be' else parse_qs(p.query).get('v',[''])[0]
+    path=p.path.strip('/')
+    live_match=re.fullmatch(r'live/([a-zA-Z0-9_-]{11})', path)
+    value=path if p.hostname=='youtu.be' else (parse_qs(p.query).get('v',[''])[0] or (live_match.group(1) if live_match else ''))
     if not re.fullmatch(r'[a-zA-Z0-9_-]{11}',value):raise ValueError('ID de video inválido')
     return value
 
