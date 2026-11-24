@@ -142,8 +142,47 @@ def direct_capture(url: str, kind: str, folder: pathlib.Path):
     return target
 
 def source_info(url):
-    options={'quiet':True,'no_warnings':True,'noplaylist':True,'skip_download':True,'socket_timeout':20}
-    with yt_dlp.YoutubeDL(options) as dl: return dl.extract_info(url,download=False)
+    """Extract public YouTube playback metadata using the current JS challenge solver."""
+    options={'quiet':True,'no_warnings':True,'noplaylist':True,
+             'skip_download':True,'socket_timeout':20,
+             'js_runtimes':{'deno':{}}}
+    with yt_dlp.YoutubeDL(options) as dl:
+        return dl.extract_info(url,download=False)
+
+
+def streamlink_capture(url, target):
+    """Fallback public-live-stream reader. No login bypass or user credentials."""
+    if not shutil.which('streamlink'):
+        raise RuntimeError('Streamlink no está instalado en el procesador')
+    stream_cmd=['streamlink','--loglevel','error','--retry-open','3',
+                '--retry-streams','5','--stream-timeout','20',
+                '--stdout',url,'best']
+    transcode_cmd=['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y',
+                   '-i','pipe:0','-t',str(LIVE_SECONDS),'-c:v','libx264',
+                   '-preset','veryfast','-crf','24','-c:a','aac',
+                   '-b:a','128k','-movflags','+faststart',str(target)]
+    stream=subprocess.Popen(stream_cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    try:
+        try:
+            result=subprocess.run(transcode_cmd,stdin=stream.stdout,stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.PIPE,timeout=LIVE_SECONDS+90,check=False)
+        finally:
+            if stream.stdout:
+                stream.stdout.close()
+        if result.returncode:
+            detail=result.stderr.decode('utf-8','replace')[-450:].strip()
+            raise RuntimeError('FFmpeg no pudo capturar señal pública vía Streamlink: '+detail)
+        if not target.is_file() or target.stat().st_size<100000:
+            raise RuntimeError('Streamlink no entregó video público utilizable')
+        return target
+    finally:
+        if stream.poll() is None:
+            stream.terminate()
+        try:
+            stream.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            stream.kill()
+            stream.wait(timeout=5)
 
 def live_capture(info,out):
     formats=info.get('formats') or []
@@ -165,7 +204,8 @@ def live_capture(info,out):
 def archive_download(url,dest):
     options={'format':'bestvideo[height<=720]+bestaudio/best[height<=720]/best','merge_output_format':'mp4',
              'outtmpl':str(dest/'archive.%(ext)s'),'noplaylist':True,'quiet':True,'no_warnings':True,
-             'max_filesize':LIMIT_MB*1024*1024,'socket_timeout':30,'retries':2}
+             'max_filesize':LIMIT_MB*1024*1024,'socket_timeout':30,'retries':2,
+             'js_runtimes':{'deno':{}}}
     with yt_dlp.YoutubeDL(options) as dl:dl.download([url])
     matches=list(dest.glob('archive.*'))
     matches=[p for p in matches if p.suffix in ('.mp4','.mkv','.webm','.mov')]
@@ -205,13 +245,28 @@ def process_session(session):
         if source_url:
             source=direct_capture(source_url,source_kind,root)
         else:
-            info=source_info(url)
-            allowed=os.environ.get('ALLOWED_YOUTUBE_CHANNEL_ID','').strip()
-            source_channel=str(info.get('channel_id') or '')
-            if allowed and source_channel!=allowed:
-                raise PermissionError('El video pertenece a un canal diferente al autorizado')
-            is_live=bool(info.get('is_live'))
-            source=live_capture(info,root/'source.mp4') if is_live else archive_download(url,root)
+            try:
+                info=source_info(url)
+                allowed=os.environ.get('ALLOWED_YOUTUBE_CHANNEL_ID','').strip()
+                source_channel=str(info.get('channel_id') or '')
+                if allowed and source_channel!=allowed:
+                    raise PermissionError('El video pertenece a un canal diferente al autorizado')
+                is_live=bool(info.get('is_live'))
+                LOG.info('YouTube source identified: %s, live=%s',video_id,is_live)
+                source=live_capture(info,root/'source.mp4') if is_live else archive_download(url,root)
+            except PermissionError:
+                raise
+            except Exception as primary_error:
+                LOG.warning('yt-dlp could not open YouTube video %s: %s; trying Streamlink',
+                            video_id,str(primary_error)[:250])
+                try:
+                    source=streamlink_capture(url,root/'streamlink_capture.mp4')
+                    is_live=True
+                    LOG.info('Streamlink captured video from %s',video_id)
+                except Exception as backup_error:
+                    raise RuntimeError('YouTube no entregó video en los dos lectores públicos. '
+                                       'yt-dlp: '+str(primary_error)[:230]+
+                                       '; Streamlink: '+str(backup_error)[:160]) from backup_error
         manifest=process(source,root/'clips',os.environ.get('WHISPER_MODEL','small'),30,80,5)
         count=0
         for idx,clip in enumerate(manifest['clips']):
@@ -231,7 +286,8 @@ def main():
         while True:time.sleep(120)
     if os.environ.get('MEDIA_RIGHTS_CONFIRMED')!='1':raise PermissionError('Confirma primero derechos de reutilización del contenido para ejecutar el worker')
     if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):raise RuntimeError('FFmpeg y FFprobe no están disponibles')
-    LOG.info('LEGNOVA worker started; polling Base44')
+    LOG.info('LEGNOVA worker started; polling Base44 (Deno=%s, Streamlink=%s)',
+             bool(shutil.which('deno')),bool(shutil.which('streamlink')))
     last_ping=0
     while True:
         try:
