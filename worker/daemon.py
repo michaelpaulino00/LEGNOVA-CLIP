@@ -311,13 +311,9 @@ def process_session(session):
         if source_kind=='webm' and source_url:
             # Captura del navegador: un clip vertical de hasta 60 segundos por
             # fragmento, sin segunda transcodificación ni búsqueda de highlights.
-            duration=float(subprocess.check_output(
-                ['ffprobe','-v','error','-show_entries','format=duration',
-                 '-of','default=noprint_wrappers=1:nokey=1',str(source)],
-                text=True,timeout=20).strip())
-            if duration<8 or duration>240:
-                raise ValueError('Fragmento WebM fuera del rango esperado')
-            seconds=min(60.0,duration)
+            # MediaRecorder WebM may not include container duration metadata.
+            # FFmpeg processes at most 60 s; probe the resulting MP4 instead.
+            seconds=60.0
             output=root/'clips';output.mkdir(exist_ok=True)
             path=output/'minuto_vertical.mp4'
             subtitle=output/'minuto_vertical.srt'
@@ -333,6 +329,12 @@ def process_session(session):
                 check=True,timeout=240)
             if path.stat().st_size<100000:
                 raise RuntimeError('La conversión vertical generó un clip vacío')
+            seconds=float(subprocess.check_output(
+                ['ffprobe','-v','error','-show_entries','format=duration',
+                 '-of','default=noprint_wrappers=1:nokey=1',str(path)],
+                text=True,timeout=20).strip())
+            if seconds<8 or seconds>61:
+                raise ValueError('El clip producido no tiene duración válida')
             manifest={'clips':[{'video_path':str(path),'subtitles_path':str(subtitle),
                                 'start_seconds':0.0,'end_seconds':seconds}]}
             LOG.info('Clip vertical de un minuto preparado (%s bytes)',path.stat().st_size)
