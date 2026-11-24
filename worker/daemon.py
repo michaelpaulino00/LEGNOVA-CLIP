@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 import requests
 import yt_dlp
 from highlight_engine import process
+from smart_crop import smart_crop_filter
 
 LOG=logging.getLogger('legnova-worker')
 
@@ -322,7 +323,7 @@ def process_session(session):
             subprocess.run(
                 ['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y',
                  '-i',str(source),'-t',str(seconds),
-                 '-vf','fps=18,scale=480:854:force_original_aspect_ratio=increase,crop=480:854,setsar=1',
+                 '-vf',smart_crop_filter(source,seconds),
                  '-c:v','libx264','-preset','ultrafast','-threads','2',
                  '-crf','26','-pix_fmt','yuv420p','-c:a','aac','-b:a','96k',
                  '-movflags','+faststart',str(path)],
