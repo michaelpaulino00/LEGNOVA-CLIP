@@ -14,7 +14,7 @@ def smart_crop_filter(video, seconds=60):
     if w<200 or h<200:
         raise ValueError('Dimensiones de video inválidas')
     if w/h<0.95:
-        return 'fps=12,scale=432:768:force_original_aspect_ratio=increase,crop=432:768,setsar=1'
+        return 'fps=24,scale=432:768:force_original_aspect_ratio=increase,crop=432:768,setsar=1'
     wide=w/h>=1.38
     # A YouTube watch page can contain chat on the right, title and comments.
     right=int(w*.79) if wide else w
@@ -101,4 +101,4 @@ def smart_crop_filter(video, seconds=60):
     LOG.info('Intelligent portrait crop: source=%sx%s player-right=%s top=%s bottom=%s faces=%s',
              w,h,right,top,bottom,sum(bool(f) for f in sampled_faces))
     return (f'setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{expr}:{y},'
-            'fps=12,scale=432:768,setsar=1')
+            'fps=24,scale=432:768,setsar=1')
