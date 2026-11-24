@@ -155,34 +155,41 @@ def streamlink_capture(url, target):
     if not shutil.which('streamlink'):
         raise RuntimeError('Streamlink no está instalado en el procesador')
     stream_cmd=['streamlink','--loglevel','error','--retry-open','3',
-                '--retry-streams','5','--stream-timeout','20',
-                '--stdout',url,'best']
+                '--retry-streams','5','--retry-max','3','--stream-timeout','20',
+                '--stdout',url,'480p,720p,best']
     transcode_cmd=['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y',
-                   '-i','pipe:0','-t',str(LIVE_SECONDS),'-c:v','libx264',
-                   '-preset','veryfast','-crf','24','-c:a','aac',
-                   '-b:a','128k','-movflags','+faststart',str(target)]
-    stream=subprocess.Popen(stream_cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
-    try:
+                   '-i','pipe:0','-t',str(LIVE_SECONDS),'-vf','scale=-2:480',
+                   '-threads','2','-c:v','libx264','-preset','veryfast','-crf','24',
+                   '-c:a','aac','-b:a','128k','-movflags','+faststart',str(target)]
+    with tempfile.TemporaryFile() as stream_errors:
+        stream=subprocess.Popen(stream_cmd,stdout=subprocess.PIPE,stderr=stream_errors)
         try:
-            result=subprocess.run(transcode_cmd,stdin=stream.stdout,stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.PIPE,timeout=LIVE_SECONDS+90,check=False)
+            try:
+                result=subprocess.run(transcode_cmd,stdin=stream.stdout,stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.PIPE,timeout=LIVE_SECONDS+90,check=False)
+            finally:
+                if stream.stdout:
+                    stream.stdout.close()
+                if stream.poll() is None:
+                    stream.terminate()
+                try:
+                    stream.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    stream.kill()
+                    stream.wait(timeout=5)
+            stream_errors.seek(0)
+            stream_detail=stream_errors.read().decode('utf-8','replace')[-400:].strip()
+            if result.returncode:
+                ffmpeg_detail=result.stderr.decode('utf-8','replace')[-280:].strip()
+                raise RuntimeError('Streamlink no obtuvo señal pública: '+stream_detail+
+                                   '; ffmpeg: '+ffmpeg_detail)
+            if not target.is_file() or target.stat().st_size<100000:
+                raise RuntimeError('Streamlink no entregó video público utilizable: '+stream_detail)
+            return target
         finally:
-            if stream.stdout:
-                stream.stdout.close()
-        if result.returncode:
-            detail=result.stderr.decode('utf-8','replace')[-450:].strip()
-            raise RuntimeError('FFmpeg no pudo capturar señal pública vía Streamlink: '+detail)
-        if not target.is_file() or target.stat().st_size<100000:
-            raise RuntimeError('Streamlink no entregó video público utilizable')
-        return target
-    finally:
-        if stream.poll() is None:
-            stream.terminate()
-        try:
-            stream.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            stream.kill()
-            stream.wait(timeout=5)
+            if stream.poll() is None:
+                stream.kill()
+                stream.wait(timeout=5)
 
 def live_capture(info,out):
     formats=info.get('formats') or []
