@@ -95,8 +95,15 @@ def direct_capture(url: str, kind: str, folder: pathlib.Path):
              '-i',url,'-t',str(LIVE_SECONDS),'-c:v','libx264','-preset','veryfast',
              '-crf','24','-c:a','aac','-b:a','128k','-movflags','+faststart',str(target)]
         subprocess.run(cmd,timeout=LIVE_SECONDS+90,check=True)
-    elif kind=='mp4':
-        target=folder/'source.mp4'
+    elif kind in ('mp4','webm'):
+        target=folder/('source.webm' if kind=='webm' else 'source.mp4')
+        if kind=='webm':
+            origin=urlparse(url)
+            # The browser recorder may only feed the worker with a public Base44 file
+            # uploaded under this app, never an arbitrary URL supplied as WebM.
+            if origin.hostname!='base44.app' or not origin.path.startswith(
+                    f'/api/apps/{APP_ID}/files/mp/public/{APP_ID}/'):
+                raise PermissionError('Los fragmentos WebM deben almacenarse en Base44 para esta aplicación')
         # Base44's public file endpoint redirects to its media delivery domain.
         # Follow that specific trusted redirect, but never arbitrary untrusted hosts.
         current=url
@@ -121,8 +128,9 @@ def direct_capture(url: str, kind: str, folder: pathlib.Path):
                     continue
                 res.raise_for_status()
                 content_type=res.headers.get('Content-Type','').split(';')[0].lower()
-                if content_type and content_type not in ('video/mp4','application/octet-stream','binary/octet-stream'):
-                    raise ValueError('La fuente no devolvió un archivo MP4')
+                accepted_types=('video/webm','application/octet-stream','binary/octet-stream') if kind=='webm' else ('video/mp4','application/octet-stream','binary/octet-stream')
+                if content_type and content_type not in accepted_types:
+                    raise ValueError('La fuente no devolvió un video '+kind.upper())
                 length=int(res.headers.get('Content-Length') or 0)
                 if length>LIMIT_MB*1024*1024:raise ValueError('El archivo supera el límite de tamaño')
                 count=0
@@ -136,9 +144,21 @@ def direct_capture(url: str, kind: str, folder: pathlib.Path):
         else:
             raise ValueError('La fuente ha realizado demasiadas redirecciones')
     else:
-        raise ValueError('Solo se acepta HLS o MP4 como fuente directa')
+        raise ValueError('Solo se acepta HLS, MP4 o WebM como fuente directa')
     if not target.is_file() or target.stat().st_size<100000:
         raise RuntimeError('No se recibieron datos de video suficientes')
+    if kind=='webm':
+        with target.open('rb') as stream:
+            if stream.read(4)!=bytes.fromhex('1a45dfa3'):
+                raise ValueError('La grabación no tiene cabecera WebM válida')
+        converted=folder/'source.mp4'
+        subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y',
+                        '-i',str(target),'-vf','scale=-2:480','-c:v','libx264',
+                        '-preset','ultrafast','-crf','25','-threads','2',
+                        '-c:a','aac','-b:a','112k','-movflags','+faststart',
+                        str(converted)],check=True,timeout=360)
+        target=converted
+        LOG.info('Grabación WebM recibida y convertida a MP4 (%s bytes)',target.stat().st_size)
     return target
 
 def youtube_auth_options():
