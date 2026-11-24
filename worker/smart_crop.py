@@ -14,26 +14,27 @@ def smart_crop_filter(video, seconds=60):
     if w<200 or h<200:
         raise ValueError('Dimensiones de video inválidas')
     if w/h<0.95:
-        return 'fps=15,scale=480:854:force_original_aspect_ratio=increase,crop=480:854,setsar=1'
+        return 'fps=12,scale=432:768:force_original_aspect_ratio=increase,crop=432:768,setsar=1'
     wide=w/h>=1.38
     # A YouTube watch page can contain chat on the right, title and comments.
     right=int(w*.79) if wide else w
     top=int(h*.08) if wide else 0
     bottom=int(h*.90) if wide else h
     sampled_faces=[]
-    interval=3
+    # A shorter three-frame sample preserves face targeting without decoding 12 seconds.
+    interval=2
     try:
         import cv2
         import numpy as np
-        sw=min(w,480)
+        sw=min(w,384)
         sh=max(2,int(round(h*sw/w/2))*2)
         p=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-nostdin',
-             '-i',str(video),'-t',str(min(seconds,12)),
+             '-i',str(video),'-t',str(min(seconds,6)),
              '-vf',f'fps=1/{interval},scale={sw}:{sh}',
-             '-frames:v','4','-pix_fmt','bgr24','-f','rawvideo','pipe:1'],
+             '-frames:v','3','-pix_fmt','bgr24','-f','rawvideo','pipe:1'],
              capture_output=True,check=True,timeout=75)
         frame_bytes=sw*sh*3
-        n=min(4,len(p.stdout)//frame_bytes)
+        n=min(3,len(p.stdout)//frame_bytes)
         if n:
             frames=np.frombuffer(p.stdout[:n*frame_bytes],np.uint8).reshape(n,sh,sw,3)
             grays=[cv2.cvtColor(f,cv2.COLOR_BGR2GRAY) for f in frames]
@@ -64,7 +65,7 @@ def smart_crop_filter(video, seconds=60):
                 for model in (frontal,profile):
                     if not model.empty() and roi.size:
                         for x,y,fw,fh in model.detectMultiScale(
-                            roi,scaleFactor=1.13,minNeighbors=4,minSize=(24,24)):
+                            roi,scaleFactor=1.13,minNeighbors=4,minSize=(20,20)):
                             faces.append(((x+fw/2)*w/sw,float(fw*fh)))
                 sampled_faces.append(faces)
     except Exception as exc:
@@ -100,4 +101,4 @@ def smart_crop_filter(video, seconds=60):
     LOG.info('Intelligent portrait crop: source=%sx%s player-right=%s top=%s bottom=%s faces=%s',
              w,h,right,top,bottom,sum(bool(f) for f in sampled_faces))
     return (f'setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{expr}:{y},'
-            'fps=15,scale=480:854,setsar=1')
+            'fps=12,scale=432:768,setsar=1')
