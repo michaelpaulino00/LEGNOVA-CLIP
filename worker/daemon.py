@@ -151,14 +151,9 @@ def direct_capture(url: str, kind: str, folder: pathlib.Path):
         with target.open('rb') as stream:
             if stream.read(4)!=bytes.fromhex('1a45dfa3'):
                 raise ValueError('La grabación no tiene cabecera WebM válida')
-        converted=folder/'source.mp4'
-        subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y',
-                        '-i',str(target),'-vf','scale=-2:480','-c:v','libx264',
-                        '-preset','ultrafast','-crf','25','-threads','2',
-                        '-c:a','aac','-b:a','112k','-movflags','+faststart',
-                        str(converted)],check=True,timeout=360)
-        target=converted
-        LOG.info('Grabación WebM recibida y convertida a MP4 (%s bytes)',target.stat().st_size)
+        # El video WebM original se edita directamente a MP4 vertical en un solo
+        # paso; convertirlo antes a un MP4 intermedio duplica CPU y retrasa la cola.
+        LOG.info('Fragmento WebM validado y recibido (%s bytes)',target.stat().st_size)
     return target
 
 def youtube_auth_options():
@@ -266,7 +261,7 @@ def upload(session_id,video_id,record,index):
     sig=hashlib.sha256(path.read_bytes()).hexdigest()[:24]
     key=f'{video_id}_{sig}'
     words=[x.strip() for x in subtitle.read_text(encoding='utf-8').splitlines() if x and '-->' not in x and not x.isdigit()]
-    title=' '.join(' '.join(words).split()[:10]).strip()[:140] or f'Fragmento {index+1}'
+    title=' '.join(' '.join(words).split()[:10]).strip()[:140] or f'Clip del directo · {time.strftime("%H:%M:%S")}'
     data={'action':'upload','session_id':session_id,'source_key':key,'start_seconds':str(record['start_seconds']),
           'end_seconds':str(record['end_seconds']),'title':title,'description':'Fragmento de transmisión autorizado'}
     with path.open('rb') as file:
@@ -313,7 +308,36 @@ def process_session(session):
                     raise RuntimeError('YouTube no entregó video en los dos lectores públicos. '
                                        'yt-dlp: '+str(primary_error)[:230]+
                                        '; Streamlink: '+str(backup_error)[:160]) from backup_error
-        manifest=process(source,root/'clips',os.environ.get('WHISPER_MODEL','small'),30,80,5)
+        if source_kind=='webm' and source_url:
+            # Captura del navegador: un clip vertical de hasta 60 segundos por
+            # fragmento, sin segunda transcodificación ni búsqueda de highlights.
+            duration=float(subprocess.check_output(
+                ['ffprobe','-v','error','-show_entries','format=duration',
+                 '-of','default=noprint_wrappers=1:nokey=1',str(source)],
+                text=True,timeout=20).strip())
+            if duration<8 or duration>240:
+                raise ValueError('Fragmento WebM fuera del rango esperado')
+            seconds=min(60.0,duration)
+            output=root/'clips';output.mkdir(exist_ok=True)
+            path=output/'minuto_vertical.mp4'
+            subtitle=output/'minuto_vertical.srt'
+            subtitle.write_text('',encoding='utf-8')
+            LOG.info('Procesando un clip vertical de %.1f segundos en una sola pasada',seconds)
+            subprocess.run(
+                ['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y',
+                 '-i',str(source),'-t',str(seconds),
+                 '-vf','fps=18,scale=480:854:force_original_aspect_ratio=increase,crop=480:854,setsar=1',
+                 '-c:v','libx264','-preset','ultrafast','-threads','2',
+                 '-crf','26','-pix_fmt','yuv420p','-c:a','aac','-b:a','96k',
+                 '-movflags','+faststart',str(path)],
+                check=True,timeout=240)
+            if path.stat().st_size<100000:
+                raise RuntimeError('La conversión vertical generó un clip vacío')
+            manifest={'clips':[{'video_path':str(path),'subtitles_path':str(subtitle),
+                                'start_seconds':0.0,'end_seconds':seconds}]}
+            LOG.info('Clip vertical de un minuto preparado (%s bytes)',path.stat().st_size)
+        else:
+            manifest=process(source,root/'clips',os.environ.get('WHISPER_MODEL','small'),30,80,5)
         count=0
         for idx,clip in enumerate(manifest['clips']):
             upload(session_id,video_id,clip,idx)
