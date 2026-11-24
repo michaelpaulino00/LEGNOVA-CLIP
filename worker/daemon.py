@@ -141,11 +141,26 @@ def direct_capture(url: str, kind: str, folder: pathlib.Path):
         raise RuntimeError('No se recibieron datos de video suficientes')
     return target
 
+def youtube_auth_options():
+    """Optional private owner-managed YouTube session held only in Render.
+
+    Never accept YouTube cookies via public Base44 file uploads or print them.
+    """
+    filename=os.environ.get('YOUTUBE_COOKIE_FILE','').strip()
+    if not filename:
+        return {}
+    path=pathlib.Path(filename)
+    if not path.is_absolute() or not path.is_file() or path.stat().st_size<100:
+        raise RuntimeError('Archivo privado de sesión YouTube no configurado en Render')
+    return {'cookiefile':str(path)}
+
+
 def source_info(url):
-    """Extract public YouTube playback metadata using the current JS challenge solver."""
+    """Extract media with JS runtime and optional authorized owner session."""
     options={'quiet':True,'no_warnings':True,'noplaylist':True,
              'skip_download':True,'socket_timeout':20,
              'js_runtimes':{'deno':{}}}
+    options.update(youtube_auth_options())
     with yt_dlp.YoutubeDL(options) as dl:
         return dl.extract_info(url,download=False)
 
@@ -157,6 +172,9 @@ def streamlink_capture(url, target):
     stream_cmd=['streamlink','--loglevel','error','--retry-open','3',
                 '--retry-streams','5','--retry-max','3','--stream-timeout','20',
                 '--stdout',url,'480p,720p,best']
+    auth=youtube_auth_options()
+    if auth:
+        stream_cmd[1:1]=['--http-cookies-file',auth['cookiefile']]
     transcode_cmd=['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y',
                    '-i','pipe:0','-t',str(LIVE_SECONDS),'-vf','scale=-2:480',
                    '-threads','2','-c:v','libx264','-preset','veryfast','-crf','24',
@@ -213,6 +231,7 @@ def archive_download(url,dest):
              'outtmpl':str(dest/'archive.%(ext)s'),'noplaylist':True,'quiet':True,'no_warnings':True,
              'max_filesize':LIMIT_MB*1024*1024,'socket_timeout':30,'retries':2,
              'js_runtimes':{'deno':{}}}
+    options.update(youtube_auth_options())
     with yt_dlp.YoutubeDL(options) as dl:dl.download([url])
     matches=list(dest.glob('archive.*'))
     matches=[p for p in matches if p.suffix in ('.mp4','.mkv','.webm','.mov')]
