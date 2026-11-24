@@ -382,8 +382,13 @@ def main():
                         bridge('needs_source',session_id=session['id'],error='YouTube requiere inicio de sesión en el servidor. Los dos lectores públicos fallaron; se reintentará automáticamente en 15 minutos.')
                     else:
                         bridge('failure',session_id=session['id'],error=issue[:300])
+                # Immediately claim the next queued browser minute after upload.
+                # Sleeping after every clip made the backlog grow unnecessarily.
+                continue
+            time.sleep(POLL_SECONDS)
         except Exception:
             LOG.exception('Polling or capture failed')
-        time.sleep(POLL_SECONDS)
+            # Back off on bridge errors to avoid repeated 409s and rate limits.
+            time.sleep(POLL_SECONDS)
 
 if __name__=='__main__':main()
