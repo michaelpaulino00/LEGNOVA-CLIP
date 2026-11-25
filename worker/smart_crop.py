@@ -1,7 +1,7 @@
 """Face-aware vertical reframing of authorized source video.
 
 Checks the whole minute for visible faces, estimates mouth movement where possible,
-interpolates the crop smoothly, and zooms slightly to remove player chrome.
+locks a fixed crop to the dominant visual speaker, and removes player chrome.
 The active-speaker selection is visual/heuristic, not verified audio diarization.
 """
 import json
@@ -90,6 +90,78 @@ def _lip_motion(first, second, face):
     return max(0.0, mouth-eyes*.65)
 
 
+def _weighted_median(values):
+    """Stable representative position; transient detections cannot pull the crop."""
+    ordered = sorted(values, key=lambda item: item[0])
+    halfway = sum(weight for _, weight in ordered) / 2.0
+    total = 0.0
+    for value, weight in ordered:
+        total += weight
+        if total >= halfway:
+            return value
+    return ordered[-1][0]
+
+
+def _speaker_lock(observations, crop_width, player_width):
+    """Associate nearby faces, then lock to one dominant visual speaker per clip.
+
+    Lip motion is only a visual proxy for speech, not audio diarization.
+    All coordinates are in the sampled frame. No per-frame pan or saliency chase.
+    """
+    tracks = []
+    for index, detections in enumerate(observations):
+        # Match each observation to at most one existing track.
+        # Spatial continuity, scale and vertical position discourage face swaps.
+        candidates = []
+        for di, (cx, cy, fw, fh, lips) in enumerate(detections):
+            for ti, track in enumerate(tracks):
+                last_index, px, py, pw, ph, _ = track[-1]
+                gap = index - last_index
+                if not 1 <= gap <= 3:
+                    continue
+                dx, dy = abs(cx-px), abs(cy-py)
+                xgate = max(crop_width*.15, (fw+pw)*.42)
+                ygate = max(crop_width*.12, (fh+ph)*.40)
+                scale = abs(math.log(max(1.0, fw*fh)/max(1.0, pw*ph)))
+                if dx <= xgate and dy <= ygate and scale <= 1.25:
+                    candidates.append((dx/xgate + dy/ygate + .35*scale + .10*(gap-1), di, ti))
+        used_faces, used_tracks = set(), set()
+        for _, di, ti in sorted(candidates):
+            if di in used_faces or ti in used_tracks:
+                continue
+            tracks[ti].append((index, *detections[di]))
+            used_faces.add(di)
+            used_tracks.add(ti)
+        for di, detection in enumerate(detections):
+            if di not in used_faces:
+                tracks.append([(index, *detection)])
+    if not tracks:
+        return None, 0, 0
+
+    def speech(lips):
+        # Cap motion spikes caused by cuts, gestures and camera movement.
+        return min(2.5, max(0.0, lips-1.5)/5.0)
+
+    def weight(item):
+        _, cx, _, fw, fh, lips = item
+        prominence = min(1.2, max(.35, math.sqrt(fw*fh)/max(1.0, crop_width*.36)))
+        return (.6 + speech(lips)) * prominence
+
+    # Prefer repeated visibility and sustained speech evidence rather than
+    # a single large or moving face. A lone detection is a fallback only.
+    repeated = [track for track in tracks if len(track) >= 2]
+    eligible = repeated or tracks
+    def rank(track):
+        evidence = sum(weight(item) for item in track)
+        visible = len(track)
+        speaking = sum(speech(item[-1]) >= .45 for item in track)
+        return evidence + .25*visible + .40*speaking
+    primary = max(eligible, key=rank)
+    center = _weighted_median([(item[1], weight(item)) for item in primary])
+    center = max(0.0, min(float(player_width), center))
+    return center, len(primary), len(tracks)
+
+
 def smart_crop_filter(video, seconds=60):
     w,h = _probe_size(video)
     if w<200 or h<200:
@@ -104,12 +176,10 @@ def smart_crop_filter(video, seconds=60):
     right = int(w*.80) if wide else w
     top = int(h*.09) if wide else 0
     bottom = int(h*.89) if wide else h
-    centers = []
-    face_samples = 0
+    locked_center = None
 
     # Two nearby frames every four seconds reveal who is moving their mouth;
-    # sampling across the WHOLE minute follows changes of camera/speaker.
-    interval = 4
+    # sampling across the WHOLE minute identifies a stable protagonist.
     try:
         import cv2
         import numpy as np
@@ -162,42 +232,22 @@ def smart_crop_filter(video, seconds=60):
             region_h = bottom-top
             crop_h = max(2,(min(region_h,int(right*16/9))//2)*2)
             crop_w = max(2,(min(right,int(crop_h*9/16))//2)*2)
-            current = max(0.0,(right-crop_w)*.5)
+            observations = []
             for i in range(0,count,2):
                 first,second = grays[i],grays[min(i+1,count-1)]
                 detections = _faces(second,rt,rb,player_right,frontal,profile)
-                best = None
-                for face in detections:
-                    x,y,fw,fh = face
-                    cx = (x+fw/2)*w/sw
-                    # Large foreground faces are preferred over an audience.
-                    area = math.sqrt(fw*fh)
-                    lips = _lip_motion(first,second,face)
-                    closeness = max(0.0,1-abs(cx-(current+crop_w/2))/max(1,crop_w))
-                    score = area*(1+min(1.1,lips/18.0))*(1+.25*closeness)
-                    if best is None or score>best[0]:
-                        best = (score,cx)
-                if best:
-                    desired = max(0.0,min(right-crop_w,best[1]-crop_w/2))
-                    face_samples += 1
-                else:
-                    # Profile faces/microphones can defeat Haar. Use movement
-                    # saliency around the performer instead of remaining fixed
-                    # on the audience or the center of the browser window.
-                    delta = np.abs(first.astype(np.int16)-second.astype(np.int16))
-                    col_energy = delta[rt:rb,:player_right].mean(axis=0)
-                    span = max(8,min(player_right,int(crop_w*sw/w)))
-                    candidates = range(0,max(1,player_right-span+1),max(1,span//14))
-                    strength,location = max(((float(col_energy[x:x+span].mean()),x)
-                                             for x in candidates),default=(0.0,0))
-                    desired = (max(0.0,min(right-crop_w,location*w/sw))
-                               if strength>1.6 else current)
-                # Faster on a scene change; smoother when following a face.
-                shift = max(-crop_w*.72,min(crop_w*.72,desired-current))
-                current = max(0.0,min(right-crop_w,current+shift*.85))
-                centers.append(round(current/2)*2)
-            LOG.info("Face tracking: %s samples, %s face matches; top=%s bottom=%s",
-                     len(centers),face_samples,top,bottom)
+                observations.append([
+                    (x+fw/2, y+fh/2, fw, fh, _lip_motion(first,second,face))
+                    for face in detections
+                    for x,y,fw,fh in [face]
+                ])
+            lock, matches, track_count = _speaker_lock(
+                observations, crop_w*sw/w, player_right)
+            if lock is not None:
+                locked_center = lock*w/sw
+            LOG.info("Speaker lock: %s samples, %s matched protagonist, %s tracks; center=%s top=%s bottom=%s",
+                     len(observations),matches,track_count,
+                     round(locked_center,1) if locked_center is not None else "fallback",top,bottom)
     except Exception as exc:
         LOG.warning("Face sampling unavailable; using safe portrait crop: %s",
                     str(exc)[:180])
@@ -208,16 +258,10 @@ def smart_crop_filter(video, seconds=60):
     crop_h=max(2,(min(region_h,int(right*16/9))//2)*2)
     crop_w=max(2,(min(right,int(crop_h*9/16))//2)*2)
     y=max(0,min(h-crop_h,top+(region_h-crop_h)//2))//2*2
-    fallback=round(max(0,(right-crop_w)//2)/2)*2
-    # Interpolate camera position between observations; no sudden jumps.
-    if len(centers)>1:
-        expression=str(centers[-1])
-        for i in range(len(centers)-2,-1,-1):
-            start,end=centers[i],centers[i+1]
-            ramp=f"({start}+({end-start})*max(0\\,min(1\\,(t-{i*interval})/{interval})))"
-            expression=f"if(lt(t\\,{(i+1)*interval})\\,{ramp}\\,{expression})"
-    else:
-        expression=str(centers[0] if centers else fallback)
+    # One stable horizontal framing for the entire clip. No interpolation,
+    # no jumping between faces, and no chase of unrelated movement.
+    center = locked_center if locked_center is not None else right/2
+    expression = str(int(max(0,min(right-crop_w,center-crop_w/2)))//2*2)
 
     # A small post-crop removes residual white player bars visible in prior
     # 432x768 clips (roughly 33px each) without adding a second encode pass.
